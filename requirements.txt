@@ -1,0 +1,11 @@
+# Core
+SQLAlchemy>=2.0,<3.0
+requests>=2.31
+beautifulsoup4>=4.12
+lxml>=5.0
+python-dateutil>=2.9
+
+# Only needed for JS-heavy sources later (not used by the TriviaNearMe
+# importer, which is plain server-rendered HTML). Installed now so the
+# environment is ready for the next adapter without a second setup pass.
+playwright>=1.44
