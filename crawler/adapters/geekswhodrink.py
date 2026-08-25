@@ -1,15 +1,24 @@
 """
-PAUSED / KNOWN INCOMPLETE (2026-08-24): geekswhodrink.com sits behind
-Cloudflare bot protection, and a burst of manual testing (probing bbox
-sizes to find where server-side filtering actually kicks in - see below)
-tripped it mid-session ("Sorry, you have been blocked"). Stopped rather
-than try to route around an active block. What's below is real and
-verified working through the polite, rate-limited client for small
-queries - it is NOT yet safe to run as a full 50-state crawl, because the
-geographic tiling this code does is too coarse (see caveat below) and a
-finer-grained version would mean many more requests than tested so far.
-Before running this for real: re-verify from a fresh session, slow the
-pace down further, and shrink the tile size (see docstring below for why).
+RESUMED (2026-08-25): the 2026-08-24 Cloudflare block cleared on its own
+within about a day (a rate-limit-style hold, not a permanent ban) -
+verified with a single polite request before touching anything else.
+
+Rewritten to abandon bounding-box tiling entirely. It looked promising in
+one early test (a small box around Seattle returned only 34 nearby
+venues), but re-running that *exact same request* today returned the
+generic ~1000-result nationwide blob instead - proof the server's geo
+filtering is inconsistent/unreliable, not a clean function of box size
+that can be tuned around. Chasing the "right" box size further would mean
+more live requests against a site that's already shown it's watching for
+unusual traffic, for a mechanism that doesn't reliably work anyway.
+
+What actually is reliable: hasAll=true consistently returns a large
+(~900-1024 row) result set that spans 30+ US states - i.e. it's already
+close to their whole nationwide inventory, not a tiny/fixed subset. So
+this now just calls the endpoint a handful of times (different arbitrary
+start points, for redundancy against any variance between calls, not
+because location changes what comes back) and dedups by GWD's own podio
+ID, instead of pretending real geographic tiling is happening.
 
 First-party adapter for Geeks Who Drink (geekswhodrink.com).
 
@@ -29,22 +38,12 @@ without a browser. The `nonce` param is a WordPress security nonce, not a
 secret - it comes back embedded in the plain HTML of any page load
 (window.WP_URL.gwdNonce) and works from a fresh, cookie-less request.
 
-A single nationwide bounding box caps out at exactly 1024 results (a
-server-side limit, not the real count) - so this tiles by US state
-(crawler/us_states.py) to get full coverage.
-
-IMPORTANT caveat found during testing: the server only actually filters
-by the bounds[...] params for a SMALL box (confirmed working: a ~0.4deg
-box around Seattle correctly returned only nearby venues). Anything
-state-sized or larger silently ignores the bounds and falls back to
-returning the same generic ~900-1024 "starter set" regardless of where
-you queried - state-level tiling as currently written does NOT give real
-per-state coverage, it just wastes 50 requests re-fetching the same
-blob. Getting genuine full-US coverage needs a much finer grid (roughly
-degree-or-smaller tiles, likely low hundreds to ~1000 tiles for the
-continental US) with podio-ID dedup across tiles, and a correspondingly
-more conservative rate limit given Cloudflare's presence. Not implemented
-yet - see the PAUSED note above.
+Known limitation accepted for now: because there's no reliable way to
+filter by location, this adapter cannot promise *complete* nationwide
+coverage the way the King Trivia adapter's true unbounded pagination
+does - only "whatever the endpoint's default result set contains," which
+observed testing shows is broad (30+ states) but capped around ~1000
+rows. Good enough to run now; revisit if GWD's own site changes.
 
 Known caveat: GWD renders one timestamp format as a precise ISO-8601
 instant in UTC (<time data-time="...">) with no per-venue timezone
@@ -66,7 +65,7 @@ from bs4 import BeautifulSoup
 from crawler.http_client import PoliteSession
 from crawler.models import Frequency, SourceType
 from crawler.pipeline import RawListing
-from crawler.us_states import US_STATE_BOUNDS
+from crawler.us_cities import US_METRO_CENTERS
 
 BASE_URL = "https://www.geekswhodrink.com"
 VENUES_PAGE_URL = f"{BASE_URL}/venues/"
@@ -93,20 +92,25 @@ def _get_nonce(session: PoliteSession) -> str | None:
 
 
 def _query_bounds(
-    session: PoliteSession, nonce: str, north: float, south: float, west: float, east: float
+    session: PoliteSession, nonce: str, lat: float, lon: float
 ) -> bytes | None:
+    # bounds[...] is included because the endpoint returns nothing at all
+    # without it (confirmed), not because it reliably filters (confirmed
+    # it doesn't, reliably) - see module docstring. A generous box is
+    # honest about what's actually happening: this is not a real
+    # geographic query, just satisfying a required parameter.
     params = {
         "action": "mb_display_mapped_events",
-        "bounds[northLat]": north,
-        "bounds[southLat]": south,
-        "bounds[westLong]": west,
-        "bounds[eastLong]": east,
+        "bounds[northLat]": lat + 5,
+        "bounds[southLat]": lat - 5,
+        "bounds[westLong]": lon - 5,
+        "bounds[eastLong]": lon + 5,
         "days": "",
         "brands": "",
         "nonce": nonce,
         "search": "",
-        "startLat": (north + south) / 2,
-        "startLong": (west + east) / 2,
+        "startLat": lat,
+        "startLong": lon,
         "searchInit": "true",
         "hasAll": "true",
     }
@@ -146,7 +150,7 @@ def _parse_time(block) -> tuple[str | None, str | None, Frequency]:
     return start_time, None, frequency
 
 
-def parse_fragment(html: bytes, state_code: str) -> list[RawListing]:
+def parse_fragment(html: bytes, tile_label: str) -> list[RawListing]:
     soup = BeautifulSoup(html, "lxml")
     listings: list[RawListing] = []
 
@@ -162,7 +166,14 @@ def parse_fragment(html: bytes, state_code: str) -> list[RawListing]:
             longitude = float(lon) if lon else None
 
             raw_address = block.get("data-address", "")
-            city_state_p = block.select_one("p")
+            # NOT block.select_one("p") - the brand-price label
+            # (<p class="quizBlock__brand">Small Batch</p>) comes first
+            # in document order and would win that selector, silently
+            # leaving city/region unparsed for almost every row (caught
+            # by checking real ingested data: 871/934 rows had no region
+            # before this fix). The city/state line lives specifically in
+            # quizBlock__content.
+            city_state_p = block.select_one(".quizBlock__content p")
             city = region = None
             if city_state_p:
                 m = re.match(r"(?P<city>.+?),\s*(?P<region>[A-Za-z]{2})$", city_state_p.get_text(strip=True))
@@ -202,7 +213,7 @@ def parse_fragment(html: bytes, state_code: str) -> list[RawListing]:
                     provider_website=BASE_URL,
                     source_url=detail_url,
                     raw_snapshot={
-                        "state_queried": state_code,
+                        "tile_queried": tile_label,
                         "podio_id": podio_id,
                         "brand_code": brand_code,
                         "raw_address": raw_address,
@@ -210,35 +221,34 @@ def parse_fragment(html: bytes, state_code: str) -> list[RawListing]:
                 )
             )
         except Exception as exc:
-            print(f"  [warn] failed to parse a GWD venue block ({state_code}): {exc}")
+            print(f"  [warn] failed to parse a GWD venue block ({tile_label}): {exc}")
             continue
 
     return listings
 
 
-def run(session: PoliteSession, limit_states: int | None = None) -> list[RawListing]:
+def run(session: PoliteSession, num_queries: int = 4) -> list[RawListing]:
+    """Calls the endpoint `num_queries` times from different arbitrary
+    points (see module docstring - this is redundancy against possible
+    variance between calls, not real geographic tiling, since geo
+    filtering was found to be unreliable). Dedups by GWD's own podio ID.
+    """
     nonce = _get_nonce(session)
     if not nonce:
         print("[GeeksWhoDrink] could not obtain a nonce - aborting")
         return []
     print(f"[GeeksWhoDrink] nonce acquired: {nonce}")
 
-    states = list(US_STATE_BOUNDS.items())
-    if limit_states:
-        states = states[:limit_states]
+    centers = US_METRO_CENTERS[:num_queries]
 
     seen_podio_ids: set[str] = set()
     all_listings: list[RawListing] = []
-    for i, (code, (south, north, west, east)) in enumerate(states, 1):
-        html = _query_bounds(session, nonce, north, south, west, east)
+    for i, (name, lat, lon) in enumerate(centers, 1):
+        html = _query_bounds(session, nonce, lat, lon)
         if html is None:
-            print(f"  [{i}/{len(states)}] {code}: request failed")
+            print(f"  [{i}/{len(centers)}] {name}: request failed")
             continue
-        listings = parse_fragment(html, code)
-        # A venue near a state border can come back from more than one
-        # state query (deliberate bbox overlap) - dedup here on GWD's own
-        # podio ID before it ever reaches the pipeline, so one physical
-        # listing doesn't get scored as two independent observations.
+        listings = parse_fragment(html, name)
         fresh = []
         for listing in listings:
             pid = listing.raw_snapshot.get("podio_id")
@@ -248,6 +258,6 @@ def run(session: PoliteSession, limit_states: int | None = None) -> list[RawList
                 seen_podio_ids.add(pid)
             fresh.append(listing)
         all_listings.extend(fresh)
-        print(f"  [{i}/{len(states)}] {code}: {len(listings)} found, {len(fresh)} new")
+        print(f"  [{i}/{len(centers)}] {name}: {len(listings)} found, {len(fresh)} new")
 
     return all_listings

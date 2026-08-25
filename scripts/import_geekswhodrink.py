@@ -2,8 +2,15 @@
 """Run the Geeks Who Drink first-party adapter and ingest results.
 
 Usage:
-    python scripts/import_geekswhodrink.py                # full run, all 50 states + DC
-    python scripts/import_geekswhodrink.py --limit 1       # smoke test, one state
+    python scripts/import_geekswhodrink.py                # default: 4 redundant queries
+    python scripts/import_geekswhodrink.py --limit 1       # smoke test, single query
+
+Runs at a slower, dedicated pace (GWD_DELAY_SECONDS below) than the
+project's general default, since this site has already shown it's
+watching for unusual traffic. See crawler/adapters/geekswhodrink.py's
+module docstring for why this makes only a handful of requests total
+(real geo-filtering on this endpoint turned out to be unreliable, not
+worth chasing with more live requests).
 """
 
 from __future__ import annotations
@@ -20,16 +27,18 @@ from crawler.http_client import PoliteSession
 from crawler.models import SourceType
 from crawler.pipeline import get_or_create_source, ingest_listing
 
+GWD_DELAY_SECONDS = 4.0
+
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--limit", type=int, default=None, help="Only query the first N states (for testing)")
+    parser.add_argument("--limit", type=int, default=4, help="Number of redundant queries to make (default 4)")
     args = parser.parse_args()
 
     init_db()
-    http = PoliteSession()
+    http = PoliteSession(delay_seconds=GWD_DELAY_SECONDS)
 
-    listings = geekswhodrink.run(http, limit_states=args.limit)
+    listings = geekswhodrink.run(http, num_queries=args.limit)
     print(f"\n[GeeksWhoDrink] {len(listings)} total listings scraped, ingesting...")
 
     with get_session() as session:
