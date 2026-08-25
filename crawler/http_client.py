@@ -113,6 +113,12 @@ class PoliteSession:
             return True
 
     def get(self, url: str, **kwargs) -> requests.Response | None:
+        return self._request("get", url, **kwargs)
+
+    def post(self, url: str, **kwargs) -> requests.Response | None:
+        return self._request("post", url, **kwargs)
+
+    def _request(self, method: str, url: str, **kwargs) -> requests.Response | None:
         if not self.allowed(url):
             print(f"  [skip] robots.txt disallows: {url}")
             return None
@@ -124,7 +130,7 @@ class PoliteSession:
         last_exc = None
         for attempt in range(1, MAX_RETRIES + 1):
             try:
-                resp = self.session.get(url, timeout=20, **kwargs)
+                resp = self.session.request(method, url, timeout=20, **kwargs)
                 self._last_request_at = time.monotonic()
                 if resp.status_code == 200:
                     return resp
@@ -134,5 +140,5 @@ class PoliteSession:
             except requests.RequestException as exc:
                 last_exc = exc
             time.sleep(min(2**attempt, 10))
-        print(f"  [fail] {url}: {last_exc}")
+        print(f"  [fail] {method.upper()} {url}: {last_exc}")
         return None
