@@ -3,3 +3,5 @@ __pycache__/
 *.pyc
 .env
 full_crawl.log
+preview/*.html
+preview/*.log
