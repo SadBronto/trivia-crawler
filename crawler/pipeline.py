@@ -114,7 +114,15 @@ def _find_or_create_venue(session: Session, listing: RawListing) -> Venue:
     norm_addr = normalize_address(listing.street_address, listing.city, listing.region)
 
     # 1. Exact match on normalized address (best signal).
-    if norm_addr:
+    # Require an actual street address before trusting this match - a
+    # normalized_address built from city+region alone (street_address
+    # missing) is nowhere near specific enough to identify one venue.
+    # Real bug this guards against, caught 2026-08-25: two unrelated
+    # Minneapolis venues with no street address on file both normalized
+    # to "minneapolis mn" and got silently merged into one Venue row,
+    # keeping whichever's name was inserted first while carrying the
+    # other's data - not a hypothetical, an actual corrupted row.
+    if norm_addr and listing.street_address:
         existing = session.execute(
             select(Venue).where(Venue.normalized_address == norm_addr)
         ).scalar_one_or_none()
