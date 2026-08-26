@@ -35,7 +35,7 @@ from crawler.models import (
     TriviaEvent,
     Venue,
 )
-from crawler.normalize import normalize_address, normalize_name
+from crawler.normalize import canonical_country, canonical_region, normalize_address, normalize_name
 from crawler.scoring import combine_confidence, score_for_source_type
 
 # How close two venues have to be (meters) to be considered the same
@@ -143,14 +143,27 @@ def _find_or_create_venue(session: Session, listing: RawListing) -> Venue:
             if dist <= DEDUP_DISTANCE_METERS:
                 return candidate
 
-    # 3. No match - create it.
+    # 3. No match - create it. Country/region are canonicalized here, once,
+    # at the single point every listing passes through on its way into the
+    # DB - not left for every downstream consumer (TWC's and TBM's site
+    # generators, this project's own CSV export) to defend against
+    # separately. Real bugs this caught live: "US"/"USA"/"United States"
+    # each producing a separate country group, "VIC"/"Victoria" and "NSW"/
+    # "New South Wales" each producing a separate region group. city is
+    # NOT touched here - that corruption (a UK postcode or a street address
+    # ending up in the city field) was adapter-specific bad extraction, not
+    # a spelling-variant problem this kind of alias table can fix; see
+    # scripts/repair_locations.py for how that was actually cleaned up
+    # (reverse geocoding from coordinates), and the affected adapters
+    # (inquizition.py, fametrivia.py) for the underlying parsing fixes.
+    canon_country = canonical_country(listing.country)
     venue = Venue(
         name=listing.venue_name.strip(),
         normalized_name=norm_name,
         street_address=listing.street_address,
         city=listing.city,
-        region=listing.region,
-        country=listing.country,
+        region=canonical_region(listing.region, canon_country),
+        country=canon_country,
         normalized_address=norm_addr or None,
         latitude=listing.latitude,
         longitude=listing.longitude,

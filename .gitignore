@@ -5,3 +5,4 @@ __pycache__/
 full_crawl.log
 preview/*.html
 preview/*.log
+exports/.~lock.*#

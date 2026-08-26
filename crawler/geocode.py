@@ -78,6 +78,50 @@ def census_batch_geocode(rows: list[tuple[int, str, str, str]]) -> dict[int, tup
     return results
 
 
+def mapbox_reverse_geocode(latitude: float, longitude: float) -> dict | None:
+    """Reverse geocode - coordinates back to place names. Returns
+    {"city": ..., "region": ..., "country": ...} (any of these can be None
+    if Mapbox's response doesn't carry that level for the point), or None on
+    a request failure.
+
+    Used to repair venues whose scraped 'city' field is actually garbage -
+    a UK postcode, a bare street address, a schedule note like "(2nd
+    Tuesday each month)" - some site-specific adapters extracted the wrong
+    text into that field. Rather than trying to regex those inconsistent
+    formats back into a real city name, deriving it from coordinates
+    (already trusted - every venue here has been forward-geocoded already)
+    is both more reliable and adapter-agnostic.
+    """
+    if not MAPBOX_ACCESS_TOKEN:
+        raise RuntimeError(
+            "MAPBOX_ACCESS_TOKEN is not set. Export it before running "
+            "(the same public pk. token used on triviawriterscoop.com)."
+        )
+    url = MAPBOX_GEOCODE_URL.format(query=f"{longitude},{latitude}")
+    resp = requests.get(
+        url,
+        params={"access_token": MAPBOX_ACCESS_TOKEN, "types": "place,region,country"},
+        timeout=15,
+    )
+    if resp.status_code != 200:
+        return None
+    data = resp.json()
+    features = data.get("features") or []
+    result: dict[str, str] = {}
+    for feature in features:
+        place_type = (feature.get("place_type") or [None])[0]
+        text = feature.get("text")
+        if not text:
+            continue
+        if place_type == "place" and "city" not in result:
+            result["city"] = text
+        elif place_type == "region" and "region" not in result:
+            result["region"] = text
+        elif place_type == "country" and "country" not in result:
+            result["country"] = text
+    return result or None
+
+
 def mapbox_geocode(query: str) -> tuple[float, float] | None:
     """Single-address geocode via Mapbox. Returns (lat, lon) or None."""
     if not MAPBOX_ACCESS_TOKEN:

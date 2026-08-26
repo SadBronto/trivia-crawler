@@ -54,7 +54,14 @@ STATE_NAMES = {
 DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 _DAY_HEADER_RE = re.compile(r"^(" + "|".join(DAY_NAMES) + r")s?$", re.IGNORECASE)
 _TIME_RE = re.compile(r"(\d{1,2}):(\d{2})\s*(AM|PM)", re.IGNORECASE)
-_MONTHLY_NOTE_RE = re.compile(r"\((First|Second|Third|Fourth|Last)\s+\w+\s+each\s+month\)", re.IGNORECASE)
+# Matches ANY parenthetical mentioning "month", not just the spelled-out
+# ordinals ("First", "Second") originally assumed here - the site actually
+# also uses numeric ones ("2nd Tuesday each month"), which that narrower
+# pattern silently failed to match, leaving the note stuck onto the city
+# text (real bug hit live: city ended up as "Kalamunda (2nd Tuesday each
+# month)"). Broadening to "any parenthetical with 'month' in it" catches
+# every phrasing actually seen without having to keep enumerating them.
+_MONTHLY_NOTE_RE = re.compile(r"\([^)]*\bmonth\b[^)]*\)", re.IGNORECASE)
 
 
 def _to_24h(hour: str, minute: str, meridiem: str) -> str:

@@ -27,6 +27,8 @@ mapped 1:1 to this project's one-RawListing-per-night pattern.
 
 from __future__ import annotations
 
+import re
+
 from playwright.sync_api import sync_playwright
 
 from crawler.models import Frequency, SourceType
@@ -37,6 +39,9 @@ FIND_A_QUIZ_URL = f"{BASE_URL}/find-a-quiz/"
 SOURCE_NAME = "Inquizition"
 
 DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
+
+# Matches a UK postal outward+inward code (e.g. "SW17 9NG", "SK10 1EX").
+_UK_POSTCODE_RE = re.compile(r"\b[A-Za-z]{1,2}\d[A-Za-z\d]?\s*\d[A-Za-z]{2}\b")
 
 COUNTRY_CODE_MAP = {
     "GB": "United Kingdom",
@@ -72,15 +77,36 @@ def _store_to_listings(store: dict) -> list[RawListing]:
     if not venue_name:
         return []
 
+    # Real bugs hit live on triviabyme.com, both from this parsing: the
+    # last-line-is-"City, Postcode" assumption below breaks whenever the
+    # site's address block doesn't actually follow that shape, which turns
+    # out to be often -
+    #   - last line is "City Postcode" with a space, not a comma
+    #     ("London SW3 5TB") - fell through to the space-joined `elif`
+    #     below and stored the WHOLE line, postcode included, as city.
+    #   - last line is a bare postcode with no city name at all
+    #     ("SW17 9NG") - same bug, city ends up as just the postcode.
+    #   - address has only ONE line total (no separate city line, just a
+    #     street) - `len(lines) > 1` was false, so `city_postcode` became
+    #     that single STREET line, stored as city ("217 Uxbridge Road").
+    # Now: comma-separated stays as before; anything else gets any UK
+    # postcode substring stripped out and whatever real text remains (if
+    # any) is used - a line that's nothing but a postcode correctly leaves
+    # city unset rather than storing the postcode as if it were a city. A
+    # single-line address is treated as street-only, never as a city.
     address_raw = (data.get("address") or "").replace("\r\n", "\n").strip()
     lines = [l.strip() for l in address_raw.split("\n") if l.strip()]
-    street = ", ".join(lines[:-1]) if len(lines) > 1 else None
-    city_postcode = lines[-1] if lines else ""
+    street = None
     city = None
-    if "," in city_postcode:
-        city = city_postcode.split(",")[0].strip()
-    elif city_postcode:
-        city = city_postcode
+    if len(lines) > 1:
+        street = ", ".join(lines[:-1])
+        last_line = lines[-1]
+        if "," in last_line:
+            city = last_line.split(",")[0].strip()
+        else:
+            city = _UK_POSTCODE_RE.sub("", last_line).strip() or None
+    elif lines:
+        street = lines[0]
 
     country_code = store.get("country")
     country = COUNTRY_CODE_MAP.get(country_code, country_code)
