@@ -83,8 +83,18 @@ def _parse_entry(entry_text: str, day: str) -> RawListing | None:
     if len(parts) >= 3:
         street = parts[1]
         last = parts[-1]
-        city = _UK_POSTCODE_RE.sub("", last).strip()
-        if not city:
+        stripped = _UK_POSTCODE_RE.sub("", last).strip()
+        # A genuine "venue, street, city, postcode" address (4+ parts) has
+        # a real city in parts[-2] once the postcode is stripped off the
+        # last part. But when parts[-1] IS the whole postcode with nothing
+        # else - a "venue, street, postcode" address with no city segment
+        # in the source text at all (only 3 parts) - parts[-2] is actually
+        # the STREET, not a city. Real bug hit live: "77-79 Allerton Road"
+        # (a street) stored as a venue's city. Only fall back to parts[-2]
+        # once there are enough parts for it to plausibly BE a city.
+        if stripped:
+            city = stripped
+        elif len(parts) > 3:
             city = parts[-2]
     elif len(parts) == 2:
         last = parts[1]
