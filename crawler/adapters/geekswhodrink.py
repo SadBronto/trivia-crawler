@@ -45,27 +45,38 @@ does - only "whatever the endpoint's default result set contains," which
 observed testing shows is broad (30+ states) but capped around ~1000
 rows. Good enough to run now; revisit if GWD's own site changes.
 
-Known caveat: GWD renders one timestamp format as a precise ISO-8601
-instant in UTC (<time data-time="...">) with no per-venue timezone
-information anywhere in the response. Converting that to a correct local
-start_time requires knowing the venue's timezone, which this adapter
-doesn't attempt (see the project's deferred geocoding pass) - so those
-rows store the UTC clock time verbatim with timezone="UTC" tagged
-explicitly, rather than silently guessing wrong. The other format GWD
-uses ("2nd Wednesday at 6:30 pm", already-local plain text for monthly/
-twice-monthly games) is used as-is with timezone left unknown.
+RESOLVED (2026-08-26): GWD renders one timestamp format as a precise
+ISO-8601 instant in UTC (<time data-time="...">) with no per-venue
+timezone anywhere in the response - originally stored as the raw UTC
+clock digits with timezone="UTC" tagged explicitly, rather than silently
+guessing wrong (see git history for that version). Now resolved properly:
+since most GWD venues carry real lat/lon, `timezonefinder` looks up the
+venue's actual IANA timezone from its coordinates, and the full ISO
+instant (not just its HH:MM digits - the earlier version threw away the
+date, which meant the correct DST offset couldn't be recovered later) is
+converted into that zone's real local wall-clock time. Only falls back to
+raw-UTC-labeled-as-UTC when a venue has no coordinates at all - a much
+smaller set now that most venues do. The other format GWD uses ("2nd
+Wednesday at 6:30 pm", already-local plain text for monthly/twice-monthly
+games) needed no fix - it was never a UTC instant to begin with.
 """
 
 from __future__ import annotations
 
 import re
+from datetime import datetime, timezone as dt_timezone
+from zoneinfo import ZoneInfo
 
 from bs4 import BeautifulSoup
+from timezonefinder import TimezoneFinder
 
 from crawler.http_client import PoliteSession
 from crawler.models import Frequency, SourceType
 from crawler.pipeline import RawListing
 from crawler.us_cities import US_METRO_CENTERS
+
+# One instance, reused - loading its lookup data is the expensive part.
+_TZ_FINDER = TimezoneFinder()
 
 BASE_URL = "https://www.geekswhodrink.com"
 VENUES_PAGE_URL = f"{BASE_URL}/venues/"
@@ -118,14 +129,32 @@ def _query_bounds(
     return resp.content if resp is not None else None
 
 
-def _parse_time(block) -> tuple[str | None, str | None, Frequency]:
+def _resolve_local_time(iso_instant: str, latitude: float | None, longitude: float | None) -> tuple[str, str]:
+    """Converts a GWD UTC instant to real local time using the venue's own
+    coordinates. Falls back to labeling it UTC (not a guess) if there are
+    no coordinates to look up a timezone from, or the lookup finds nothing
+    (open ocean, invalid coordinates, etc.).
+    """
+    try:
+        instant = datetime.strptime(iso_instant[:19], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=dt_timezone.utc)
+    except ValueError:
+        return iso_instant[11:16], "UTC"
+
+    if latitude is not None and longitude is not None:
+        tz_name = _TZ_FINDER.timezone_at(lat=latitude, lng=longitude)
+        if tz_name:
+            local = instant.astimezone(ZoneInfo(tz_name))
+            return local.strftime("%H:%M"), tz_name
+
+    return instant.strftime("%H:%M"), "UTC"
+
+
+def _parse_time(block, latitude: float | None, longitude: float | None) -> tuple[str | None, str | None, Frequency]:
     """Returns (start_time 24h "HH:MM" or None, timezone or None, frequency)."""
     time_moment = block.select_one("span.time-moment")
     if time_moment and time_moment.get("data-time"):
-        # ISO instant, UTC (see module docstring caveat).
-        m = re.match(r"\d{4}-\d{2}-\d{2}T(\d{2}):(\d{2})", time_moment["data-time"])
-        if m:
-            return f"{m.group(1)}:{m.group(2)}", "UTC", Frequency.WEEKLY
+        start_time, tz = _resolve_local_time(time_moment["data-time"], latitude, longitude)
+        return start_time, tz, Frequency.WEEKLY
 
     time_tag = block.select_one("time")
     text = time_tag.get_text(" ", strip=True) if time_tag else ""
@@ -187,7 +216,7 @@ def parse_fragment(html: bytes, tile_label: str) -> list[RawListing]:
                 street = street[: -len(city)].strip()
 
             day_of_week = block.get("data-day") or None
-            start_time, tz, frequency = _parse_time(block)
+            start_time, tz, frequency = _parse_time(block, latitude, longitude)
 
             brand_code = (block.get("data-brand") or "").lower()
             brand_label = BRAND_LABELS.get(brand_code, brand_code or None)

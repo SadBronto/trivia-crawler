@@ -9,3 +9,15 @@ python-dateutil>=2.9
 # importer, which is plain server-rendered HTML). Installed now so the
 # environment is ready for the next adapter without a second setup pass.
 playwright>=1.44
+
+# Offline lat/lng -> IANA timezone lookup (no API, no cost) - used to
+# convert Geeks Who Drink's UTC-only timestamps into each venue's real
+# local time.
+timezonefinder>=6.5
+
+# zoneinfo (stdlib) has no bundled IANA database on Windows - it relies on
+# the OS's own tz data, which Windows doesn't ship. Without this package,
+# ZoneInfo("America/Denver") etc. raise ZoneInfoNotFoundError on Windows
+# even though the same code works unmodified on Linux/Mac. No-op on
+# platforms that already have system tz data.
+tzdata>=2024.1
