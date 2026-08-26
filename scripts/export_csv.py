@@ -2,10 +2,18 @@
 """Export the current DB to a spreadsheet-friendly CSV in exports/.
 
 Two files are written:
-  - exports/trivia_events_all.csv     every event, every status (for your own review)
-  - exports/trivia_events_verified.csv  only events at/above the publish
-    threshold (confidence_score >= 60, status=active) - the ones actually
-    fit to hand off toward TriviaByMe eventually.
+  - exports/trivia_events_all.csv     every event, every status - this is
+    the one meant for copy-pasting wholesale into a Google Sheet. It
+    already carries `source_name` and `confidence_score` per row, so
+    filtering which rows actually show up on a given site's map is a
+    decision made where the data is *displayed* (a Sheet filter/view, or
+    the site's own query), not something this export pre-decides.
+  - exports/trivia_events_verified.csv  the same data pre-filtered to
+    confidence_score >= 60 and status=active, kept around for a quick
+    look at "what's already strong" without opening a spreadsheet.
+
+This script only ever reads the local crawler DB - it never writes to
+TWC's, TriviaByMe's, or anyone else's Sheet.
 """
 
 from __future__ import annotations
