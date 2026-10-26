@@ -27,13 +27,24 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Run TriviaNearMe importer
-        run: python scripts/import_trivianearme.py
+      - name: Install browser for JS-rendered sources
+        run: playwright install --with-deps chromium
+
+      # Runs every importer (each isolated, so one blocked/broken source
+      # never stops the rest), geocodes new venues, then retires events that
+      # stopped appearing at their source. Writes a per-source table to the
+      # job summary and fails the run only if NOTHING refreshed.
+      - name: Run all importers
+        env:
+          MAPBOX_ACCESS_TOKEN: ${{ secrets.MAPBOX_ACCESS_TOKEN }}
+        run: python scripts/run_all.py
 
       - name: Export CSV
+        if: always()
         run: python scripts/export_csv.py
 
       - name: Commit updated database and exports
+        if: always()
         run: |
           git config user.name "trivia-crawler-bot"
           git config user.email "actions@users.noreply.github.com"
