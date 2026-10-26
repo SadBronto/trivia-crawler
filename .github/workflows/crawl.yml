@@ -12,6 +12,7 @@ on:
 # staleness logic in the DB carry forward between scheduled runs for free.
 permissions:
   contents: write
+  actions: write
 
 jobs:
   crawl:
@@ -39,3 +40,11 @@ jobs:
           git add data/trivia.db exports/
           git diff --cached --quiet && echo "No changes to commit" || git commit -m "Automated crawl run $(date -u +%Y-%m-%d)"
           git push
+
+      # GitHub auto-disables scheduled workflows after 60 days with no
+      # repo activity. Weeks where the crawl finds nothing new push nothing,
+      # so this re-enables the workflow on every run to reset that timer.
+      - name: Keep scheduled workflow alive
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api -X PUT "repos/${{ github.repository }}/actions/workflows/crawl.yml/enable"
